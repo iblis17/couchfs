@@ -30,7 +30,7 @@ class Couch(LoggingMixIn, Operations):
                 If the doc is unable to decode,
                 we return the raw text.
         '''
-        res = self.account.get(path)
+        res = self.account.get(self._get_doc_id(path))
         code = res.status_code
 
         if code == http.client.NOT_FOUND:
@@ -49,6 +49,14 @@ class Couch(LoggingMixIn, Operations):
             doc = res.text
 
         return doc if not raw else res
+
+    def _get_doc_id(self, path) -> str:
+        '''
+        extract the id part if filename contain json suffix
+        e.g. the ``id`` of ``id.json``
+        '''
+        name_part = path.rpartition('.json')
+        return  name_part[0] if name_part[1] else name_part[2]
 
     def read(self, path, size, offset, fh):
         'Returns a string containing the data requested.'
@@ -76,7 +84,7 @@ class Couch(LoggingMixIn, Operations):
         if is_db(doc):
             db = self.account[doc['db_name']]
             docs = tuple(map(
-                lambda x: x['id'],
+                lambda x: '{}.json'.format(x['id']),
                 filter(
                     lambda x: False if x['id'].startswith('_design/') else True,
                     db.all_docs()
