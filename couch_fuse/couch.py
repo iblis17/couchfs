@@ -20,11 +20,12 @@ class Couch(LoggingMixIn, Operations):
         self.account = cloudant.Account(self.uri, auth=self.credential)
 
     @property
-    def _all_dbs(self) -> dict:
+    def _all_dbs(self) -> list:
         return self.account.all_dbs().json()
 
-    def _get_doc(self, path) -> dict:
+    def _get_doc(self, path, raw=False) -> dict:
         '''
+        :param raw: with the args, we just return the ``response`` object
         :return: the document in json.
                 If the doc is unable to decode,
                 we return the raw text.
@@ -47,7 +48,18 @@ class Couch(LoggingMixIn, Operations):
             self.log.debug('json decode failed')
             doc = res.text
 
-        return doc
+        return doc if not raw else res
+
+    def read(self, path, size, offset, fh):
+        'Returns a string containing the data requested.'
+        res = self._get_doc(path[1:], raw=True)
+        doc = res.json()
+
+        if not is_doc(doc):
+            raise FuseOSError(EIO)
+
+        return res.text.encode()[offset:offset + size]
+
 
     def readdir(self, path, fh):
         '''
@@ -55,7 +67,7 @@ class Couch(LoggingMixIn, Operations):
         tuples. attrs is a dict as in getattr.
         '''
         ret = ('.', '..')
-        
+
         if path == '/':
             return ret + tuple(self._all_dbs)
 
@@ -86,9 +98,13 @@ class Couch(LoggingMixIn, Operations):
                 'st_nlink': st_nlink,
             }
 
-        doc = self._get_doc(path[1:])
+        res = self._get_doc(path[1:], raw=True)
+        doc = res.json()
+
+        # stat attrs
         file_type = stat.S_IFREG
         st_nlink = 1
+        st_size = 0
 
         if is_db(doc):
             file_type = stat.S_IFDIR
@@ -96,10 +112,12 @@ class Couch(LoggingMixIn, Operations):
         elif is_doc(doc):
             file_type = stat.S_IFREG
             st_nlink = 1
+            st_size = len(res.text.encode())
 
         return {
             'st_mode': (file_type | 0o755),
             'st_nlink': st_nlink,
+            'st_size': st_size,
         }
 
 
