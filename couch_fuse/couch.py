@@ -75,10 +75,15 @@ class Couch(LoggingMixIn, Operations):
 
         if is_db(doc):
             db = self.account[doc['db_name']]
-            return ret + tuple(map(
+            docs = tuple(map(
                 lambda x: x['id'],
-                db.all_docs()
+                filter(
+                    lambda x: False if x['id'].startswith('_design/') else True,
+                    db.all_docs()
+                )
             ))
+            self.log.debug('All docs of {}: {}'.format(db.uri, docs))
+            return ret + docs
 
     def getattr(self, path, fh=None):
         '''
