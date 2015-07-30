@@ -5,7 +5,7 @@ import stat
 
 from errno import ENOENT
 from fuse import FUSE, FuseOSError, LoggingMixIn, Operations
-from json import JSONDecoder
+from json import JSONDecoder, dumps
 from sys import argv, exit
 
 from utils import is_db, is_doc
@@ -23,13 +23,23 @@ class Couch(LoggingMixIn, Operations):
     def _all_dbs(self) -> list:
         return self.account.all_dbs().json()
 
-    def _get_doc(self, path, raw=False) -> dict:
+    def _get_doc(self, path, raw=False, check_doc=False,
+                 formated=False) -> dict or str:
         '''
         :param raw: with the args, we just return the ``response`` object
+        :param check_doc: Checking the body is a regular doc,
+                it should be able to decoded.
+                (via utils.is_doc)
+        :param formated: body in beautiful form
         :return: the document in json.
                 If the doc is unable to decode,
                 we return the raw text.
         '''
+        assert not (raw and is_doc), (
+            'param raw and is_doc are mutually exclusive')
+        assert not (raw and formated), (
+            'param raw and formated are mutually exclusive')
+
         res = self.account.get(self._get_doc_id(path))
         code = res.status_code
 
@@ -42,13 +52,38 @@ class Couch(LoggingMixIn, Operations):
                 ' ...' if len(res.text) > 200 else None
             )
 
+        if raw:
+            return res
+
+        body = self._get_doc_body(res)
+
+        if check_doc and not is_doc(body):
+            raise FuseOSError(EIO)
+
+        if formated:
+            return self._get_doc_formated(body)
+
+        return body
+
+    def _get_doc_body(self, res):
+        '''
+        Accept a response; we will try do decode it as json.
+
+        if decode successfully, return a ``dict``,
+        else we return a ``str`` from ``res.text``.
+        '''
         try:
             doc = res.json()
         except JSONDecoder as e:
             self.log.debug('json decode failed')
             doc = res.text
 
-        return doc if not raw else res
+        return doc
+
+    def _get_doc_formated(self, doc: dict) -> str:
+        assert isinstance(doc, dict)
+
+        return dumps(doc, indent=2)
 
     def _get_doc_id(self, path) -> str:
         '''
@@ -58,16 +93,13 @@ class Couch(LoggingMixIn, Operations):
         name_part = path.rpartition('.json')
         return  name_part[0] if name_part[1] else name_part[2]
 
-    def read(self, path, size, offset, fh):
-        'Returns a string containing the data requested.'
-        res = self._get_doc(path[1:], raw=True)
-        doc = res.json()
+    def read(self, path, size, offset, fh) -> bytes:
+        '''
+        Returns a string containing the data requested.
+        '''
+        body = self._get_doc(path[1:], check_doc=True, formated=True)
 
-        if not is_doc(doc):
-            raise FuseOSError(EIO)
-
-        return res.text.encode()[offset:offset + size]
-
+        return body.encode()[offset:offset + size]
 
     def readdir(self, path, fh):
         '''
@@ -111,8 +143,7 @@ class Couch(LoggingMixIn, Operations):
                 'st_nlink': st_nlink,
             }
 
-        res = self._get_doc(path[1:], raw=True)
-        doc = res.json()
+        doc = self._get_doc(path[1:])
 
         # stat attrs
         file_type = stat.S_IFREG
@@ -122,10 +153,11 @@ class Couch(LoggingMixIn, Operations):
         if is_db(doc):
             file_type = stat.S_IFDIR
             st_nlink = 2
+            st_size = 4096
         elif is_doc(doc):
             file_type = stat.S_IFREG
             st_nlink = 1
-            st_size = len(res.text.encode())
+            st_size = len(self._get_doc_formated(doc))
 
         return {
             'st_mode': (file_type | 0o755),
